@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
@@ -24,16 +24,38 @@ namespace PrvaDomacaZadaca_Kalkulator
         public static string DECIMAL_SEPARATOR;
         public static string ERROR_MESSAGE;
         public static int MAX_DISPLAY_LENGTH;
+        public static string _DEFAULT_;
+
+        public const char ADDITION = '+';
+        public const char SUBTRACTION = '-';
+        public const char MULTIPLICATION = '*';
+        public const char DIVISION = '/';
+
+        public const char EQUALS = '=';
+
+        public const char SINUS = 'S';
+        public const char KOSINUS = 'K';
+        public const char TANGENS = 'T';
+        public const char QUADRAT = 'Q';
+        public const char ROOT = 'R';
+        public const char INVERS = 'I';
+
+        public const char PUT = 'P';
+        public const char GET = 'G';
+
+        public const char MINUS = 'M';
+        public const char CLEAR = 'C';
+        public const char RESET = 'O';
 
         static Configuration()
         {
             DECIMAL_SEPARATOR = System.Globalization.CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator =
                 ",";
-            ERROR_MESSAGE = "_E_";
+            ERROR_MESSAGE = "-E-";
             MAX_DISPLAY_LENGTH = 10;
+            _DEFAULT_ = "0";
         }
     }
-
 
     public class CalculatorServices : ICalculatorServices
     {
@@ -147,13 +169,19 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         private State _state;
         //private string _display;
+        private IMemoryOperation _memory;
+
+
+        public ICalculatorServices Service { get; set; }
 
         // Constructor
         public Calculator()
         {
             // New calculator is 'ZeroState' by default
             //this._display = start;
+            this._memory = new Memory();
             this._state = new ZeroState(new Display(), this);
+            this.Service = new CalculatorServices();
         }
 
         // Properties
@@ -161,6 +189,12 @@ namespace PrvaDomacaZadaca_Kalkulator
         {
             get { return _state; }
             set { _state = value; }
+        }
+
+        public double Memory
+        {
+            get { return _memory.Recall(); }
+            set { _memory.Store(value); }
         }
 
         //public Display Display
@@ -179,6 +213,7 @@ namespace PrvaDomacaZadaca_Kalkulator
         }
     }
 
+    #region INPUT
     /// <summary>
     /// There are six possible inputs
     /// </summary>
@@ -187,9 +222,13 @@ namespace PrvaDomacaZadaca_Kalkulator
         Zero,
         NonZeroDigit,
         DecimalSeparator,
-        MathOp,
+        UnaryMathOp,
+        BinaryMathOp,
+        MemoryOp,
         Equals,
-        Clear
+        Clear,
+        Reset,
+        _INVALID_
     }
 
     public class Input
@@ -200,36 +239,10 @@ namespace PrvaDomacaZadaca_Kalkulator
         public Input(char inPressedDigit)
         {
             this.Value = inPressedDigit;
-            this.Type = fauxSwitch(inPressedDigit);
-
-        }
-
-        private InputType fauxSwitch(char caseSwitch)
-        {
-            if (caseSwitch == '0')
-            {
-                return InputType.Zero;
-            }
-            if (Char.IsDigit(caseSwitch))
-            {
-                return InputType.NonZeroDigit;
-            }
-            if (caseSwitch == ',')
-            {
-                return InputType.DecimalSeparator;
-            }
-            if (caseSwitch == '=')
-            {
-                return InputType.Equals;
-            }
-            if (caseSwitch == 'C')
-            {
-                return InputType.Clear;
-            }
-
-            return InputType.MathOp;
+            this.Type = inPressedDigit.GetInputType();
         }
     }
+    #endregion
 
     /// <summary>
     /// The 'State' abstract class
@@ -280,24 +293,21 @@ namespace PrvaDomacaZadaca_Kalkulator
     /// </summary>
     class ZeroState : State
     {
-        // (optional) pending op
-        //private IBinaryOperation _pendingOperation;
-        private IOperation _pendingOp;
-
         // Overloaded constructors
-        public ZeroState(State state) : this(state.Display, state.Calculator)
+        public ZeroState(State state) : this(state.Display, state.Calculator, state.PendingOperation)
         { }
 
-        public ZeroState(IDisplay display, Calculator calculator)
+        public ZeroState(IDisplay display, Calculator calculator, Operation pendingOperation = null)
         {
             this.calculator = calculator;
             this.display = display;
+            this.PendingOperation = pendingOperation;
             Initialize();
         }
 
         private void Initialize()
         {
-            this.display.Set("0");
+            //this.display.Set("0");
         }
 
         public override void Press(char inPressedDigit)
@@ -320,13 +330,24 @@ namespace PrvaDomacaZadaca_Kalkulator
                     this.display.Set("0,");
                     calculator.State = new AccumulatorDecimalState(this);
                     break;
-                case InputType.MathOp:
+                case InputType.BinaryMathOp:
                     // ACTION: go to Computed or ErrorState state.
                     // If there is pending op, update the display based on the result of the calculation (or error).
                     // Also, if calculation was successful, push a new pending op, built from the event, using a current number of "0".
                     // NEW STATE: ComputedState
 
                     calculator.State = new ComputedState(this);
+                    break;
+                case InputType.UnaryMathOp:
+
+                    break;
+                case InputType.MemoryOp:
+
+                    break;
+                case InputType.Reset:
+                    // ACTION: reset
+                    // NEW_STATE: ZeroState
+                    calculator.Reset();
                     break;
                 case InputType.Equals:
                     // ACTION: As with MathOp, but without any pending op
@@ -338,6 +359,7 @@ namespace PrvaDomacaZadaca_Kalkulator
                     // ACTION: (ignore)
                     // NEW_STATE: ZeroState
                     break;
+                //case InputType._INVALID_:
                 default:
                     calculator.State = new ErrorState(this);
                     break;
@@ -360,18 +382,14 @@ namespace PrvaDomacaZadaca_Kalkulator
     /// </summary>
     class AccumulatorState : State
     {
-        /// <summary>
-        /// Buffer
-        /// </summary>
-        private char[] digits;
-        // (optional) pending op
-        //IBinaryOperation _pendingOperation;
-        private IOperation _pendingOp;
+        public AccumulatorState(State state) : this(state.Display, state.Calculator, state.PendingOperation)
+        { }
 
-        public AccumulatorState(State state)
+        public AccumulatorState(IDisplay display, Calculator calculator, Operation pendingOperation = null)
         {
-            this.calculator = state.Calculator;
-            this.display = state.Display;
+            this.calculator = calculator;
+            this.display = display;
+            this.PendingOperation = pendingOperation;
             Initialize();
         }
 
@@ -386,19 +404,27 @@ namespace PrvaDomacaZadaca_Kalkulator
             switch (input.Type)
             {
                 case InputType.Zero:
-                case InputType.NonZeroDigit:
-                    // ACTION: Append the digit or "0" to the buffer.
+                    // ACTION: Append "0" to the buffer.
                     // NEW_STATE: AccumulatorState
+                    this.DigitAccumulator = calculator.Service.AccumulateZero(DigitAccumulator);
+                    this.display.Append(input);
+                    calculator.State = new AccumulatorState(this);
+                    break;
+                case InputType.NonZeroDigit:
+                    // ACTION: Append the digit to the buffer.
+                    // NEW_STATE: AccumulatorState
+                    this.DigitAccumulator = calculator.Service.AccumulateNonZeroDigit(input.Value, DigitAccumulator);
                     this.display.Append(input);
                     calculator.State = new AccumulatorState(this);
                     break;
                 case InputType.DecimalSeparator:
                     // ACTION: Append the separator to the buffer, and transition to new state.
                     // NEW_STATE: AccumulatorDecimalState
+                    this.DigitAccumulator = calculator.Service.AccumulateSeparator(DigitAccumulator);
                     this.display.Append(input);
                     calculator.State = new AccumulatorDecimalState(this);
                     break;
-                case InputType.MathOp:
+                case InputType.BinaryMathOp:
                     // ACTION: go to Computed or ErrorState state.
                     // If there is pending op, update the display based on the result of the calculation (or error).
                     // Also, if calculation was successful, push a new pending op, built from the event, using a current number of "0".
@@ -447,10 +473,14 @@ namespace PrvaDomacaZadaca_Kalkulator
         // (optional) pending op
         //IBinaryOperation _pendingOperation;
 
-        public AccumulatorDecimalState(State state)
+        public AccumulatorDecimalState(State state) : this(state.Display, state.Calculator, state.PendingOperation)
+        { }
+
+        public AccumulatorDecimalState(IDisplay display, Calculator calculator, Operation pendingOperation = null)
         {
-            this.calculator = state.Calculator;
-            this.display = state.Display;
+            this.calculator = calculator;
+            this.display = display;
+            this.PendingOperation = pendingOperation;
             Initialize();
         }
 
@@ -465,17 +495,24 @@ namespace PrvaDomacaZadaca_Kalkulator
             switch (input.Type)
             {
                 case InputType.Zero:
-                case InputType.NonZeroDigit:
-                    // ACTION: Append the digit or "0" to the buffer.
+                    // ACTION: Append "0" to the buffer.
                     // NEW_STATE: AccumulatorState
+                    this.DigitAccumulator = calculator.Service.AccumulateZero(DigitAccumulator);
                     this.display.Append(input);
-                    calculator.State = new AccumulatorState(this);
+                    calculator.State = new AccumulatorDecimalState(this);
+                    break;
+                case InputType.NonZeroDigit:
+                    // ACTION: Append the digit to the buffer.
+                    // NEW_STATE: AccumulatorState
+                    this.DigitAccumulator = calculator.Service.AccumulateNonZeroDigit(input.Value, DigitAccumulator);
+                    this.display.Append(input);
+                    calculator.State = new AccumulatorDecimalState(this);
                     break;
                 case InputType.DecimalSeparator:
                     // ACTION: (ignore)
                     // NEW_STATE: AccumulatorDecimalState
                     break;
-                case InputType.MathOp:
+                case InputType.BinaryMathOp:
                     // ACTION: go to Computed or ErrorState state.
                     // If there is pending op, update the display based on the result of the calculation (or error).
                     // Also, if calculation was successful, push a new pending op, built from the event, using a current number of "0".
@@ -523,10 +560,14 @@ namespace PrvaDomacaZadaca_Kalkulator
         private double _calculatedNumber;
         // (optional) pending op
 
-        public ComputedState(State state)
+        public ComputedState(State state) : this(state.Display, state.Calculator, state.PendingOperation)
+        { }
+
+        public ComputedState(IDisplay display, Calculator calculator, Operation pendingOperation = null)
         {
-            this.calculator = state.Calculator;
-            this.display = state.Display;
+            this.calculator = calculator;
+            this.display = display;
+            this.PendingOperation = pendingOperation;
             Initialize();
         }
 
@@ -555,7 +596,7 @@ namespace PrvaDomacaZadaca_Kalkulator
                     // ACTION: Start a new decimal accumulator, preserving any pending op
                     // NEW_STATE: AccumulatorDecimalState
                     break;
-                case InputType.MathOp:
+                case InputType.BinaryMathOp:
                     // ACTION: Stay in Computed state. Replace any pending op with a new one built from the input event
                     // NEW STATE: ComputedState
 
@@ -598,7 +639,7 @@ namespace PrvaDomacaZadaca_Kalkulator
         /// <summary>
         /// Error message
         /// </summary>
-        private string _errorMessage = Configuration.ERROR_MESSAGE;
+        private readonly string _errorMessage = Configuration.ERROR_MESSAGE;
 
         public ErrorState(State state)
         {
@@ -610,6 +651,7 @@ namespace PrvaDomacaZadaca_Kalkulator
         private void Initialize()
         {
             display.Set(_errorMessage);
+            //this.PendingOperation = null;
         }
 
         public override void Press(char inPressedDigit)
@@ -620,6 +662,7 @@ namespace PrvaDomacaZadaca_Kalkulator
                 case InputType.Clear:
                     // ACTION: Go to Zero state. Clear any pending op.
                     // NEW_STATE: ZeroState
+                    PendingOperation = null;
                     calculator.State = new ZeroState(this);
                     break;
             }
@@ -631,6 +674,7 @@ namespace PrvaDomacaZadaca_Kalkulator
         }
     }
 
+    #region DISPLAY
     public interface IDisplay
     {
         void Append(string text);
@@ -643,9 +687,9 @@ namespace PrvaDomacaZadaca_Kalkulator
     /// </summary>
     public class Display : IDisplay
     {
-        private string buffer = String.Empty;
+        private string buffer; // = String.Empty;
 
-        public Display() : this(String.Empty)
+        public Display() : this(Configuration._DEFAULT_)
         {
         }
 
@@ -656,7 +700,7 @@ namespace PrvaDomacaZadaca_Kalkulator
 
         public override string ToString()
         {
-            return buffer;
+            return Format();
         }
 
         public void Append(string text)
@@ -675,17 +719,23 @@ namespace PrvaDomacaZadaca_Kalkulator
             buffer = String.Empty;
         }
     }
+    #endregion
 
+    #region OPERATION
     public interface IOperation
     {
         double Compute(params double[] operands);
+        double Result { get; set; }
+        double[] Operands { get; }
     }
 
     public abstract class Operation : IOperation
     {
         public double FirstOperand;
         public double SecondOperand;
-        public double Result;
+
+        public abstract double Result { get; set; }
+        public double[] Operands { get { return new double[] { FirstOperand, SecondOperand }; } }
 
         public abstract string KEYWORD { get; }
 
@@ -703,17 +753,22 @@ namespace PrvaDomacaZadaca_Kalkulator
             {
                 throw new ArgumentNullException();
             }
-            if (operands.Length < 1)
+            var count = operands.Length;
+            if (count < 1)
             {
                 throw new ArgumentException("Not enough numbers for operation");
             }
-            if (operands.Length > 2)
+            if (count > 2)
             {
                 throw new ArgumentException("Too many numbers for supported operations");
             }
 
+            FirstOperand = operands[0];
+            SecondOperand = (count > 1) ? operands[1] : 0.0;
+
             return 0;
         }
+
     }
 
     /// <summary>
@@ -738,14 +793,69 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         void Store(double d);
         double Recall();
+
+        void Clear();
+    }
+
+    public class Memory : IMemoryOperation
+    {
+        private static double _MEMORY_; // = 0.0;
+        private const double _NO_VALUE_ = 0.0;
+
+        public double Compute(params double[] operands)
+        {
+            int count = operands.Length;
+
+            if (count == 0)
+            {
+                return Recall();
+            }
+            if (count == 1)
+            {
+                double number = operands[0];
+                Store(number);
+                return number;
+            }
+
+            // else
+            throw new ArgumentException("Too many numbers for supported operations");
+        }
+
+        public double Result
+        {
+            get { return Recall(); }
+            set { Store(value); }
+        }
+
+        // no operands
+        public double[] Operands { get { return new double[] { }; } }
+
+        public void Store(double d)
+        {
+            // spremanjem broja u memoriju briše se prethodno spremljeni broj
+            _MEMORY_ = d;
+        }
+
+        public double Recall()
+        {
+            return _MEMORY_;
+        }
+
+        public void Clear()
+        {
+            _MEMORY_ = _NO_VALUE_;
+        }
     }
 
     public class AdditionOperation : Operation, IBinaryOperation
     {
         public double Compute(double operand0, double operand1)
         {
-            return operand0 + operand1;
+            //Result = operand0 + operand1;
+            return Result = operand0 + operand1;
         }
+
+        public override double Result { get; set; }
 
         public override string KEYWORD { get { return "+"; } }
 
@@ -760,9 +870,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0, double operand1)
         {
-            return operand0 - operand1;
+            return Result = operand0 - operand1;
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "-"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -776,9 +887,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0, double operand1)
         {
-            return operand0 * operand1;
+            return Result = operand0 * operand1;
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "*"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -792,9 +904,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0, double operand1)
         {
-            return operand0 / operand1;
+            return Result = operand0 / operand1;
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "/"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -808,9 +921,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0)
         {
-            return -operand0;
+            return Result = -operand0;
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "M"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -824,9 +938,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0)
         {
-            return Math.Sin(operand0);
+            return Result = Math.Sin(operand0);
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "S"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -840,9 +955,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0)
         {
-            return Math.Cos(operand0);
+            return Result = Math.Cos(operand0);
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "C"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -856,9 +972,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0)
         {
-            return Math.Tan(operand0);
+            return Result = Math.Tan(operand0);
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "T"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -872,9 +989,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0)
         {
-            return operand0 * operand0;
+            return Result = operand0 * operand0;
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "Q"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -888,9 +1006,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0)
         {
-            return Math.Sqrt(operand0);
+            return Result = Math.Sqrt(operand0);
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "R"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -904,9 +1023,10 @@ namespace PrvaDomacaZadaca_Kalkulator
     {
         public double Compute(double operand0)
         {
-            return 1.0 / operand0;
+            return Result = 1.0 / operand0;
         }
 
+        public override double Result { get; set; }
         public override string KEYWORD { get { return "I"; } }
 
         public sealed override double Compute(params double[] operands)
@@ -915,6 +1035,18 @@ namespace PrvaDomacaZadaca_Kalkulator
             return Compute(operands[0]);
         }
     }
+
+
+    public static class OperationServices
+    {
+        public static Operation NextOperation(this Operation current, Operation next)
+        {
+            next.FirstOperand = current.Result;
+
+            return next;
+        }
+    }
+    #endregion
 
     public static class Extensions
     {
@@ -947,42 +1079,104 @@ namespace PrvaDomacaZadaca_Kalkulator
             return new Display(text.ToString());
         }
 
+        public static InputType GetInputType(this char inputChar)
+        {
+            if (inputChar == '0')
+            {
+                return InputType.Zero;
+            }
+            if (Char.IsDigit(inputChar))
+            {
+                return InputType.NonZeroDigit;
+            }
+            if (inputChar == ',')
+            {
+                return InputType.DecimalSeparator;
+            }
+            if (inputChar == Configuration.EQUALS)
+            {
+                return InputType.Equals;
+            }
+            if (inputChar == Configuration.CLEAR)
+            {
+                return InputType.Clear;
+            }
+            if (inputChar == Configuration.RESET)
+            {
+                return InputType.Reset;
+            }
+
+            var binChars = new char[]
+            {
+                Configuration.ADDITION
+                , Configuration.SUBTRACTION
+                , Configuration.MULTIPLICATION
+                , Configuration.DIVISION
+            };
+            var unChars = new char[]
+            {
+                Configuration.SINUS
+                , Configuration.KOSINUS
+                , Configuration.TANGENS
+                , Configuration.QUADRAT
+                , Configuration.ROOT
+                , Configuration.INVERS
+            };
+            var memChars = new char[]
+            {
+                Configuration.PUT
+                , Configuration.GET
+            };
+            if (binChars.Contains(inputChar))
+            {
+                return InputType.BinaryMathOp;
+            }
+            if (unChars.Contains(inputChar))
+            {
+                return InputType.UnaryMathOp;
+            }
+            if (memChars.Contains(inputChar))
+            {
+                return InputType.MemoryOp;
+            }
+
+            return InputType._INVALID_;
+        }
+
         public static IOperation ToOperation(this Input input)
         {
-            if (input.Type != InputType.MathOp)
+            if (input.Type == InputType._INVALID_ || (input.Type != InputType.BinaryMathOp && input.Type != InputType.UnaryMathOp && input.Type != InputType.MemoryOp))
             {
                 throw new ArgumentException("Only mathematical operators can be turned into operation");
             }
 
             switch (input.Value)
             {
-                case '+':
+                case Configuration.ADDITION:
                     return new AdditionOperation();
-                case '-':
+                case Configuration.SUBTRACTION:
                     return new SubtractionOperation();
-                case '*':
+                case Configuration.MULTIPLICATION:
                     return new MultiplicationOperation();
-                case '/':
+                case Configuration.DIVISION:
                     return new DivisionOperation();
-                case 'M':
+                case Configuration.MINUS:
                     return new MinusOperation();
-                case 'S':
+                case Configuration.SINUS:
                     return new SinusOperation();
-                case 'K':
+                case Configuration.KOSINUS:
                     return new CosinusOperation();
-                case 'T':
+                case Configuration.TANGENS:
                     return new TangensOperation();
-                case 'Q':
+                case Configuration.QUADRAT:
                     return new QuadratOperation();
-                case 'R':
+                case Configuration.ROOT:
                     return new RootOperation();
-                case 'I':
+                case Configuration.INVERS:
                     return new InversOperation();
-                //case 'P':
-                //    return IMemoryOperation();
-                //    break;
-                //case 'G':
-                //    break;
+                case Configuration.PUT:
+                case Configuration.GET:
+                    return new Memory();
                 default:
                     return null;
             }
@@ -1019,6 +1213,12 @@ namespace PrvaDomacaZadaca_Kalkulator
             return display.Append(input.Value);
         }
 
+        public static IDisplay Append(this IDisplay display, Operation input)
+        {
+            display.Append(input.KEYWORD);
+            return display;
+        }
+
         public static IDisplay MergeWith(this IDisplay display, IDisplay text)
         {
             display.Append(text.ToString());
@@ -1035,6 +1235,22 @@ namespace PrvaDomacaZadaca_Kalkulator
         {
             display.Clear();
             return display;
+        }
+
+        //public static double Clear(this double value)
+        //{
+        //    value = 0.0;
+        //    return value;
+        //}
+
+        public static Calculator Reset(this Calculator calculator)
+        {
+            calculator.State = new ZeroState(new Display("0"), calculator);
+            calculator.Memory = 0.0;
+
+            calculator = new Calculator();
+
+            return calculator;
         }
     }
 
